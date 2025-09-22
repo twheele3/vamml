@@ -1,0 +1,50 @@
+{
+    "align_method": "diff",
+    "batch_size":8,
+    "expt": "example",
+    "hole_count": 2,
+    "hole_margin": 0,
+    "hole_pars": {
+        "n": 4,
+        "r": 0.4
+    },
+    "hole_range": [
+        10,
+        60
+    ],   
+    "kmean_group": [
+        155.40568757,
+        153.75507468,
+        111.35401764
+    ],
+    "mask_shape": "circle",
+    "min_diff": 0.25,
+    "min_support": 1.0,
+    "min_thickness": 0.5,
+    "obj_radius": 3,
+    "obj_thickness": 1.25,
+    "random_seed": 1696022625,
+    "rescale_size": 64,
+    "shape_method": "circle_deform",
+    "shape_pars": {
+        "n": 6,
+        "r": 0.7,
+        "shape": 256
+    },
+    "shape_seeds": {
+        "0": 1406782446,
+        "1": 3042366842,
+        "2": 930624931,
+        "3": 2663254555,
+        "4": 3003693808,
+        "5": 731731182,
+        "6": 3880378319,
+        "7": 2608092348
+    },
+    "skip_images": [],
+    "tophat": false,
+    "voxel_size": 0.025,
+    "working_diameter": 6.4,
+    "z_offset": 0.025,
+    "z_pitch": 0.625
+}
