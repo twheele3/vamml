@@ -8,7 +8,3 @@ This repository is for code related to the VAMML method as described in (pending
 ## How to use
 
 There are several interactive python notebooks in the 'examples' folder for how to start and process VAMML experiments, as well as running the VAMML model with custom data augmentations.
-
-## Requirements
-
-Please note that due to version specifics, model pipeline code is only confirmed stable with tensorflow==2.9.1.
