@@ -1,19 +1,15 @@
-from time import time
-import importlib
 import os
 import numpy as np
 import json
-from matplotlib import pyplot as plt
-from mpl_toolkits import mplot3d
-from sklearn.decomposition import PCA
+from time import time
 from PIL import Image
-from stl import mesh
-import scipy
+from matplotlib import pyplot as plt
+from sklearn.decomposition import PCA
+from alive_progress import alive_bar
+from scipy.spatial import distance_matrix
 from . import shapes
 from . import images
 from . import alignments
-from alive_progress import alive_bar
-from skimage.filters import gaussian
 
 
 default_pars = {
@@ -212,6 +208,9 @@ class Experiment:
         ptcs = []
         min_dists = []
         seeds = []
+        # Minimum thickness in pixels for features to not have negative spaces connect
+        min_thickness = int(self.pars['min_thickness'] / 2 / self.pars['voxel_size'])
+        min_support = int(selfpars['min_support'] / 2 / self.pars['voxel_size'])
         # Aligns shapes by rigid registration, generating subsampled arrays to compare relative similarities.
         if self.pars['align_method'] == 'diff':
             with alive_bar(1, title='Batch generated') as bar:
@@ -223,7 +222,7 @@ class Experiment:
                     # Testing for shape continuity without any sections that are too thin
                     while not np.all((
                         shapes.continuity_test(arr),
-                        shapes.min_thickness_test(arr,self.pars),
+                        shapes.min_thickness_test(arr,min_thickness),
                         shapes.min_support_test(arr,self.pars)
                     )):
                         seed = rng.integers(0,2**32,1)[0]
@@ -257,7 +256,7 @@ class Experiment:
                         arr = self.get_shape(seed,i)
                         while not np.all((
                             shapes.continuity_test(arr),
-                            shapes.min_thickness_test(arr,self.pars),
+                            shapes.min_thickness_test(arr,min_thickness),
                             shapes.min_support_test(arr,self.pars)
                         )):
                             seed = rng.integers(0,2**32,1)[0]
@@ -288,7 +287,7 @@ class Experiment:
                     arr = self.get_shape(i,len(seeds))
                     if not shapes.continuity_test(arr):
                         continue
-                    if not shapes.min_thickness_test(arr,self.pars):
+                    if not shapes.min_thickness_test(arr,min_thickness):
                         continue
                     if not shapes.min_support_test(arr,self.pars):
                         continue
@@ -303,7 +302,7 @@ class Experiment:
                     ptr = ptc.swapaxes(1,2).reshape(2,np.prod(ptc.shape[1:]))
                     
                     
-                    dists = scipy.spatial.distance_matrix(pts,ptc.reshape((2,np.prod(ptc.shape[1:]))).T).reshape(pts.T.shape[1],ptc.shape[1],8)
+                    dists = distance_matrix(pts,ptc.reshape((2,np.prod(ptc.shape[1:]))).T).reshape(pts.T.shape[1],ptc.shape[1],8)
                     
                     min_dist = np.sort(dists[...,0],axis=0)[1,:].max()
                     
@@ -312,7 +311,7 @@ class Experiment:
                     if np.sort(diffs)[1] > self.pars['min_diff']:
                         if len(ptcs) > 0:
                             for p in range(len(ptcs)):
-                                dists = scipy.spatial.distance_matrix(pts,ptc.reshape((2,np.prod(ptc.shape[1:]))).T).reshape(pts.T.shape[1],ptc.shape[1],8)
+                                dists = distance_matrix(pts,ptc.reshape((2,np.prod(ptc.shape[1:]))).T).reshape(pts.T.shape[1],ptc.shape[1],8)
                                 min_dist_c = np.max([min_dist,min_dists[p]])
                                 diffs = ((np.sort(dists,axis=0)[0,...] > min_dist).sum(axis=0)/pts.shape[0] + 
                                          (np.sort(dists,axis=1)[:,0,...] > min_dist).sum(axis=0)/pts.shape[0]) / 2
@@ -660,18 +659,7 @@ class Experiment:
                     in_scaled = images.norm_to_uint8(in_scaled).astype(float)
                     ### Commented out for new method
                     in_scaled = in_scaled / TRUE_IMAGE_THRESHOLD
-                    # distance = scipy.ndimage.distance_transform_edt(in_scaled>TRUE_IMAGE_THRESHOLD)#0.001) #Changed TW 20241103
-                    # distmax = distance.max()
-                    # bins = 50
-                    # distance = (distance * bins / distance.max()).astype(int)
-                    # idx = np.indices(np.array([i for i in distance.shape]+[bins]))[-1]
-                    # idx = idx == distance[...,None]
-                    # pivot = ((idx*in_scaled[...,None]).sum(axis=(0,1)) / (1+idx.sum(axis=(0,1)))).argmax()
-                    # correction = (distance > pivot).astype(float)
-                    
-                    # correction = gaussian(correction,sigma=2*distmax/bins)*in_scaled.max() - in_scaled
-                    # correction[correction < 0] = 0
-                    # in_scaled = in_scaled + correction
+
                     in_scaled[in_scaled>1.] = 1.
                     in_scaled = images.norm_to_uint8(in_scaled)
                     

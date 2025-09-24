@@ -3,6 +3,18 @@ from PIL import Image
 from scipy.optimize import minimize
 
 def affine_trs_decomp(x,y,s,theta,cx,cy):
+    """
+    Affine (t)ranslation (r)otation (s)caling decomposition for individually integrating cartesian-parseable inputs and create a usable affine matrix output.
+
+    Args:
+        x (float)     : X-axis translation value
+        y (float)     : Y-axis translation value
+        s (float)     : Scale relative to base value of 1
+        theta (float) : Angle to rotate in radians
+
+    returns:
+        array shape (6,) describing affine matrix per Image.Transform.AFFINE standard
+    """
     mat_t = np.array([[1, 0, x],
                       [0, 1, y],
                       [0, 0, 1]],

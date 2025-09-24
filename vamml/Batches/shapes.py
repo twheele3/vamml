@@ -1,23 +1,10 @@
-import os
-import shutil
-from mpl_toolkits import mplot3d
-from matplotlib import pyplot as plt
 import numpy as np
-from mpl_toolkits import mplot3d
-from matplotlib import pyplot
-from matplotlib.colors import LightSource
+import io
+from matplotlib import pyplot as plt
 from matplotlib.path import Path
 import matplotlib.patches as patches
-from matplotlib.collections import LineCollection
-from sklearn.decomposition import PCA
-from itertools import combinations
-import io
-import scipy
-import skimage
-import cv2
-### Unnecessary imports as stands; for STL making.
-from stl import mesh
-import meshlib
+from skimage.measure import label
+from scipy.ndimage import binary_erosion
 
 def make_shape_mask(n,r,shape,cardinality=None,invert=True):
     '''
@@ -64,137 +51,6 @@ def make_shape_mask(n,r,shape,cardinality=None,invert=True):
     if invert:
         arr = np.invert(arr)
     return arr
-    
-def plotSTL(file):
-    """
-    Renders a simple 3D plot of an STL file for debugging purposes.
-    
-    args:
-        file (str or mesh object) : The filename+directory pointing to the STL to plot, or prepared mesh.Mesh object.
-        
-    returns:
-        n/a. Plots inline.
-    """
-    
-    # Create a new plot
-    figure = pyplot.figure()
-    axes = mplot3d.Axes3D(figure)
-
-    if type(file) == str:
-        # Load the STL mesh
-        stlmesh = mesh.Mesh.from_file(file)
-    else:
-        stlmesh = file
-    polymesh = mplot3d.art3d.Poly3DCollection(stlmesh.vectors)
-
-    # Create light source
-    ls = LightSource(azdeg=225, altdeg=45)
-
-    # Darkest shadowed surface, in rgba
-    dk = np.array([0.2, 0.0, 0.0, 1])
-    # Brightest lit surface, in rgba
-    lt = np.array([0.7, 0.7, 1.0, 1])
-    # Interpolate between the two, based on face normal
-    shade = lambda s: (lt-dk) * s + dk
-
-    # Set face colors 
-    sns = ls.shade_normals(stlmesh.get_unit_normals(), fraction=1.0)
-    rgba = np.array([shade(s) for s in sns])
-    polymesh.set_facecolor(rgba)
-
-    axes.add_collection3d(polymesh)
-
-    # Adjust limits of axes to fill the mesh, but keep 1:1:1 aspect ratio
-    pts = stlmesh.points.reshape(-1,3)
-    ptp = max(np.ptp(pts, 0))/2
-    ctrs = [(min(pts[:,i]) + max(pts[:,i]))/2 for i in range(3)]
-    lims = [[ctrs[i] - ptp, ctrs[i] + ptp] for i in range(3)]
-    axes.auto_scale_xyz(*lims)
-
-    pyplot.show()
-
-def overlapping_tris(arr,simplices,points,scan=1,threshold=2):
-    """
-    Finds all triangles who have significant positive feature map overlap, based on centroid proximity sum.
-
-    args:
-        arr (array)      : a 2d feature map where higher values correspond to positive features (ie image/mask).
-        simplices (list) : a list of vertex index sets describing triangles.
-        points (array)   : an [N,2] array of vertices falling within the shape of arr.
-        scan (int)       : window size to scan around simplex centroid, must be >= 0.
-        threshold (num)  : minimum value in scan window to accept simplex
-
-    returns:
-        list [N,3]: a list of triangle simplices that significantly overlap with feature map.
-    """
-    tris = []
-    x = points[:,0]
-    y = points[:,1]
-    for simplex in simplices:
-        cx = np.sum([x[i] for i in simplex])//3
-        cy = np.sum([y[i] for i in simplex])//3
-        check = np.sum(arr[cx-scan:cx+scan+1,cy-scan:cy+scan+1])
-        if check >= threshold:
-            tris.append(simplex)
-    return np.asarray(tris)
-
-def find_borders(edges,polys):
-    """
-    Finds all edges that are borders of a polygon set.
-    
-    args:
-        edges (array,int) : An [N,2] array of vertex index pairs describing edges where N is number of edges.
-        polys (array,int) : An [N,n] array of vertex index sets describing polygons where N is number of edges
-                                and n is number of vertices per polygon.
-    
-    returns:
-        array(int)[N,2]: An array of vertex index pairs of border edges.
-    """
-    
-    borders = []
-    for edge in edges:
-        # Checks whether tris contain both vectors of an edge. 
-        # If only 1 triangle in tris has edge, then it's a border edge.
-        if (((polys == edge[0]).astype(int) + (polys == edge[1]).astype(int)).sum(axis=-1)==2).sum() == 1:
-            borders.append(edge)
-    
-    return np.asarray(borders)
-
-def find_borders_array(edges,tris):
-    """
-    Finds edges which 
-    
-    ## TODO: rebuild algorithm to work with only triangles input.
-    Concept: 
-    - Sort simplices
-    - Get all permutations as tuples
-    - Get unique tuple counts
-    
-    """
-    # Build test array to compare all tris vs edges
-    edgetest = np.repeat(tris[None,...],edges.shape[0],axis=0)
-    # Find all tris containing both vectors of all edges
-    borders = (edges[...,0][...,None,None] == edgetest) + (edges[...,1][...,None,None] == edgetest)
-    # Tris that contain 2 true values contain an edge. Find number of tris that contain edge.
-    # If only 1 tri contains an edge, that means it is a border edge.
-    borders = (borders.sum(axis=-1)==2).sum(axis=-1) == 1
-    
-    return edges[borders,:]
-
-def find_edges(tris):
-    """
-    Gets all edges present in a set of triangle simplices
-
-    args:
-        tris (arr) : An [N,3] array of vertex indices describing triangles.
-
-    returns:
-        arr(int)[N,2] : An array describing all edges of all triangles input.
-    """
-    edges = []
-    for i,j in combinations(range(3),2):
-        edges.append(np.concatenate([tris[:,i][...,None],tris[:,j][...,None]],axis=1))
-    return np.concatenate(edges,axis=0)
 
 def make_random_shape(pars,random_state):
     """
@@ -227,66 +83,6 @@ def make_random_shape(pars,random_state):
         arr[xind:xind+mask_size,yind:yind+mask_size] = subset
     return arr
 
-def arr_to_stl(arr,radius=1,thickness=1):
-    """
-    Converts a boolean-parseable 2D array to an STL mesh object with z-thickness.
-
-    Args:
-        arr (np-like 2d) : A boolean-parseable 2D array.
-        radius (float)   : Unit radius to scale relative to centroid.
-        thickness (float): Unit thickness to scale STL.
-    """
-    pca_rt = PCA(n_components=2)
-    pca_rt.fit(np.asarray(np.where(arr)).T)
-    
-    angle = np.arctan2(pca_rt.components_[0,1], pca_rt.components_[0,0])
-    angle = np.degrees(angle)
-    
-    arr = scipy.ndimage.rotate(arr.astype(float), -angle) > 0.5
-    
-    pc_stats = PCA(n_components=2)
-    pc_idx = np.asarray(np.where(arr)).T
-    pc_stats = pca_rt.fit_transform(pc_idx)
-    
-    # Getting maximum distance from PCA centroid, transforming as unit radius
-    unit_radius = np.sqrt((pc_stats**2).sum(axis=1)).max()
-    pc_stats = pc_stats * radius / unit_radius
-
-    # Find relevant pixels with sobel dxdy
-    edgearr = scipy.ndimage.sobel(arr,0) * scipy.ndimage.sobel(arr,1) * arr
-    points = np.asarray(np.where(edgearr)).T
-    # Delaunay triangulation to generate polys
-    tri = scipy.spatial.Delaunay(points)
-    
-    tris = overlapping_tris(arr,tri.simplices,points)
-    # Find borders to stitch 2D to 3D
-    edges = find_edges(tris)
-    borders = find_borders(edges,tris)
-
-    data = np.zeros(tris.shape[0]*2 + borders.shape[0]*2, dtype=mesh.Mesh.dtype)
-    
-    verts = []
-    # Converting point indices to actual positions
-    for point in points:
-        idx = np.where((pc_idx[:,0] == point[0]) & (pc_idx[:,1] == point[1]))[0][0]
-        verts.append(pc_stats[idx])
-    verts = np.asarray(verts)
-    
-    # Adding z element and doubling to simulate extrusion
-    verts = np.concatenate([np.concatenate([verts,np.ones(len(verts))[:,None]*thickness/2],axis=-1),
-                            np.concatenate([verts,np.ones(len(verts))[:,None]*thickness/-2],axis=-1)],
-                            axis=0)
-    
-    faces = np.concatenate([tris,
-                            tris+len(points),
-                            np.concatenate([borders,borders[:,0][:,None]+len(points)],axis=-1),
-                            np.concatenate([borders+len(points),borders[:,1][:,None]],axis=-1)],
-                            axis=0)
-    
-    data['vectors'] = verts[faces]
-    
-    return mesh.Mesh(data)
-
 def clip_center(arr,pars):
     px_radius = pars['working_diameter'] / 2 / pars['voxel_size']
     frame_size = pars['shape_pars']['shape']
@@ -294,7 +90,7 @@ def clip_center(arr,pars):
     return arr*mask
 
 def continuity_test(arr):
-    return skimage.measure.label(arr).max() == 1
+    return label(arr).max() == 1
 
 def circle_deform(pars,random_state):
     arr = make_random_shape(pars,random_state)
@@ -332,20 +128,32 @@ def rotate_point(v, origin, angle):
     y = np.sin(angle) * (v[...,0]-origin) + np.cos(angle) * (v[...,1]-origin) + origin
     return np.array([x,y]).T
 
-def min_thickness_test(arr,pars):
+def min_thickness_test(arr,min_pixels):
     """
     Test for minimum connecting thickness within continuous features.
     Detects if any holes open up in feature.
-    """
-    min_pixels = int(pars['min_thickness'] / 2 / pars['voxel_size'])
-    dil_arr = cv2.erode(arr.astype(np.uint8),np.ones((min_pixels,min_pixels),dtype=np.uint8))
-    return skimage.measure.label(np.invert(dil_arr.astype(bool))).max() == skimage.measure.label(np.invert(arr.astype(bool))).max()
 
-def min_support_test(arr,pars):
+    Args:
+        arr (2D numpy array) : Binary-coercable array
+        min_pixels (int)     : Minimum feature radius (1/2 total thickness) to test for
+
+    Returns:
+        Boolean
+    """
+    dil_arr = binary_erosion(arr,np.ones((min_pixels,min_pixels)))
+    return label(np.invert(dil_arr.astype(bool))).max() == label(np.invert(arr.astype(bool))).max()
+
+def min_support_test(arr,min_pixels):
     """
     Test for minimum connecting thickness within continuous features.
     Detects if there's a change in number of discrete features after dilation based on minimum thickness.
+
+    Args:
+        arr (2D numpy array) : Binary-coercable array
+        min_pixels (int)     : Minimum feature radius (1/2 total thickness) to test for
+
+    Returns:
+        Boolean
     """
-    min_pixels = int(pars['min_support'] / 2 / pars['voxel_size'])
-    dil_arr = cv2.erode(arr.astype(np.uint8),np.ones((min_pixels,min_pixels),dtype=np.uint8))
-    return skimage.measure.label(dil_arr.astype(bool)).max() == 1
+    dil_arr = binary_erosion(arr,np.ones((min_pixels,min_pixels)))
+    return label(dil_arr.astype(bool)).max() == 1

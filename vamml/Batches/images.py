@@ -1,18 +1,14 @@
-import os
-import shutil
 import numpy as np
 from matplotlib import pyplot as plt
-import cv2
 from PIL import Image
-import scipy
-import skimage
+from scipy.spatial import distance_matrix
+from scipy.ndimage import rotate,gaussian_filter1d
+from skimage.segmentation import watershed,flood_fill
+from skimage.filters import gaussian,sobel
+from skimage.measure import label
+from skimage.morphology import white_tophat,binary_dilation,binary_erosion
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
-from matplotlib.path import Path
-import matplotlib.patches as patches
-from matplotlib.collections import LineCollection
-import io
 from .shapes import make_shape_mask,clip_center,circle_deform,rectangle_array
 
 def find_grid_dist(image,plot=False):
@@ -29,15 +25,15 @@ def find_grid_dist(image,plot=False):
     """
     if type(image)==str:
         image = np.asarray(Image.open(image)).sum(axis=-1)
-    im = skimage.filters.gaussian(image, sigma=10)
+    im = gaussian(image, sigma=10)
     # filtering by dxdy sobel
-    im = skimage.filters.sobel(im,axis=0)*skimage.filters.sobel(im,axis=1)
+    im = sobel(im,axis=0)*sobel(im,axis=1)
     # refiltering for magnitude
-    im = skimage.filters.sobel(im)
+    im = sobel(im)
     # blurring 
-    im = skimage.filters.gaussian(im,sigma=10)
+    im = gaussian(im,sigma=10)
     im = im > (im.max() * 0.5)
-    basins = skimage.measure.label(im)
+    basins = label(im)
     pts = []
     for i in range(basins.max()):
         # incrementing for boolean test reasons
@@ -46,7 +42,7 @@ def find_grid_dist(image,plot=False):
         pts.append( np.asarray(np.where(basins == i)).mean(axis=-1) )
     pts = np.asarray(pts)
     # Find nearest neighbors of each point
-    dists = scipy.spatial.distance_matrix(pts,pts)
+    dists = distance_matrix(pts,pts)
     dists_sorted = np.sort(dists,axis=-1)
     # Diagnostic plotting as proof
     if plot:
@@ -93,10 +89,10 @@ def estimate_hist_range(arr):
     # Taking derivative of normalized values
     dv = nvals[1:] - nvals[:-1]
     # Smoothing with gaussian filter
-    sdv = scipy.ndimage.gaussian_filter1d(dv,sigma=5)
+    sdv = gaussian_filter1d(dv,sigma=5)
     # Getting watershed basins
-    basins = skimage.segmentation.watershed(sdv)
-    peaks = skimage.segmentation.watershed(1-sdv)
+    basins = watershed(sdv)
+    peaks = watershed(1-sdv)
 
     mins = []
     for i in np.unique(basins):
@@ -120,7 +116,7 @@ def fill_mask(arr,min_threshold):
     while np.any(arr_fill == 1):
         i += 1
         seedpt = np.asarray(np.where(arr_fill == 1)).T[0]
-        arr_fill = skimage.segmentation.flood_fill(arr_fill,(seedpt[0],seedpt[1]),i)
+        arr_fill = flood_fill(arr_fill,(seedpt[0],seedpt[1]),i)
     return arr_fill
 
 def remove_edgeclip(arr):
@@ -224,7 +220,7 @@ def rotate_array(arr, pca, as_bool = True):
     if as_bool:
         arr = arr.astype(float)
         arr = (arr - arr.min()) / (arr.max() - arr.min())
-    arr = scipy.ndimage.rotate(arr, -angle)
+    arr = rotate(arr, -angle)
     if as_bool:
         arr = arr > 0.5
     return arr
@@ -287,27 +283,17 @@ def process_image(image_name,pars):
     coeffs = [2,1,1]
     kmeans = KMeans(n_clusters = 2, n_init = 10)
     kmeans.fit(hsv.reshape((np.prod(hsv.shape[:-1]),hsv.shape[-1])))
-    # Assigns group as of interest based on distance from specified median group
-    
-    # ### TODO: Refine process of cluster selection
-    # kgroup = scipy.spatial.distance_matrix( kmeans.cluster_centers_, np.asarray(pars['kmean_group'])[None,...] ).argmin()
-    # # Labels pixels aligning with cluster of interest
-    # kmask = np.asarray(kmeans.labels_).reshape(hsv.shape[:-1]) == kgroup
+
     ### TW 20241011: Swapping over to tophat method, should be more robust (hopefully)
     if not 'tophat' in pars.keys():
         pars['tophat'] = True
     if pars['tophat']:
-        mask = skimage.morphology.white_tophat(hsv[...,1:].prod(-1),
-                                                footprint=np.ones((int(pars['image_cal'] * 2),
-                                                                   int(pars['image_cal'] * 2))))
+        mask = white_tophat(hsv[...,1:].prod(-1),footprint=np.ones((int(pars['image_cal'] * 2),int(pars['image_cal'] * 2))))
     else:
         mask = hsv[...,2]
     mask = mask > (mask.max() * 0.5)
-    mask = skimage.morphology.binary_dilation(skimage.morphology.binary_erosion(mask, 
-                                                                                np.ones((int(pars['image_cal'] * 0.1),
-                                                                                         int(pars['image_cal'] * 0.1)))),
-                                                                                np.ones((int(pars['image_cal'] * 0.1),
-                                                                                         int(pars['image_cal'] * 0.1))))
+    mask = binary_dilation(binary_erosion(mask,np.ones((int(pars['image_cal'] * 0.1),int(pars['image_cal'] * 0.1)))),
+                           np.ones((int(pars['image_cal'] * 0.1),int(pars['image_cal'] * 0.1))))
     coeffs = [2,1,1]
     arr = np.asarray([hsv[...,i]*coeffs[i] for i in range(3)]).sum(axis=0) * mask
     arr = (arr - arr.min())*255/(arr.max() - arr.min())
@@ -315,9 +301,7 @@ def process_image(image_name,pars):
     arr = normalize_to_percentiles(arr,
                                    lower = 1 - 1.*mask.sum() / np.prod(mask.shape),
                                    upper = 1 - 0.05*mask.sum() / np.prod(mask.shape))
-    basins = skimage.measure.label(mask)
-    # May be buggy, removing for now - TW 2023-09-22
-    # basins = remove_edgeclip(basins)
+    basins = label(mask)
     n,c = np.unique(basins,return_counts=True)
     c = c[n!=0]
     n = n[n!=0]
@@ -413,12 +397,12 @@ def centered_crop(arr):
 
 def score_overlap(pin,pout):    
     # TODO: Debug input. Should be calculated in process_images, but is failing due to an unknown scaling issue. Object buffering?
-    mean_dist_in = np.sort(scipy.spatial.distance_matrix(pin.T,pin.T),axis=0)[1,:].mean()
+    mean_dist_in = np.sort(distance_matrix(pin.T,pin.T),axis=0)[1,:].mean()
     # Making mirrored and transposed permutations of point clouds
-    mean_dist_out = np.sort(scipy.spatial.distance_matrix(pout.T,pout.T),axis=0)[1,:].mean()
+    mean_dist_out = np.sort(distance_matrix(pout.T,pout.T),axis=0)[1,:].mean()
     mout = get_point_permutations(pout)
     # Get distances between in and out point set
-    dists = scipy.spatial.distance_matrix(pin.T,mout.reshape((2,np.prod(mout.shape[1:]))).T).reshape(pin.shape[1],mout.shape[1],8)
+    dists = distance_matrix(pin.T,mout.reshape((2,np.prod(mout.shape[1:]))).T).reshape(pin.shape[1],mout.shape[1],8)
     # Get sum of non-overlapping points
     in_overlap = (dists.min(axis=1) < 1.5*mean_dist_in).sum(axis=0) / pin.shape[1]
     out_overlap = (dists.min(axis=0) < 1.5*mean_dist_out).sum(axis=0) / mout.shape[1]
