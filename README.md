@@ -3,7 +3,7 @@
 ## Overview
 This repository is for code related to the VAMML method as described in (pending). This method is designed to generate 2D training data for VAM by creating batches of random shapes to print, then automatically aligns them for training data in an attention U-net model. A visual overview of VAMML:
 
-![png](assets/Overview.png)
+![png](assets/Overview.svg)
 
 ## How to use
 
