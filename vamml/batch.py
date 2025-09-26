@@ -1,133 +1,98 @@
 import os
 import json
+import warnings
 from time import time
 
 import numpy as np
 from PIL import Image
 from matplotlib import pyplot as plt
 from alive_progress import alive_bar
+import pandas as pd
 
 from .batchtools import shapes,images,alignments
-from .batchtools.utils import NpEncoder
+from .batchtools.utils import NpEncoder,convert_keys_to_int
+from .batchtools.default_pars import default_pars
 
 
-default_pars = {
-                    "array_size": 256, # Int, array output size
-                    "batch_size": 8, # Total number of features to generate.
-                    "cal_keyword": "cal", # Keyword to locate calibration image from filename
-                    "downsample_size": 64, # Size to downsample arrays to for difference testing
-                    "hole_count": 2, # Max number of holes per feature.
-                    "hole_margin": 0, # Margin to make holes inside main shape.
-                    "hole_pars": { # Misc generator parameters, how to generate holes in feature
-                        "n": 4,
-                        "r": 0.4
-                    },
-                    "hole_range": [ # Range in pixels to randomize base hole diameter
-                        10,
-                        60
-                    ],
-                    "kmean_group": [ # For auto-fitting image features, nearest kmean group by HSV value.
-                        155.40568757,
-                        153.75507468,
-                        111.35401764
-                    ],
-                    "mask_shape": "circle", # Masking element to clip vs object radius
-                    "min_diff": 0.2, # Minimum fractional difference between different features.
-                    "min_support": 0.5, # Minimum support of narrow points on feature, prevents fragmenting.
-                    "min_thickness": 0.1, # Minimum thickness in mm between any internal features and surface.
-                    "obj_radius": 3, # Maximum object radius
-                    "obj_thickness": 1.25, # Z-thickness
-                    "processing_function": "images.process_image", # (str) Name of function to call for imag processing
-                    "random_seed": None, # Starting seed for generator
-                    "shape_method": "circle_deform", # Method to generate shapes. Available: ['circle_deform', 'rectangle_array','mixed']
-                    "shape_pars": { # Miscellaneous generator parameters to assemble shape arrays
-                        "n": 6,
-                        "r": 0.7,
-                        "cardinality":4
-                    },
-                    "skip_images": [], # List of images to skip, by number key (see 'image_dict' when generated)
-                    "tophat": False, # Whether to use tophat method for image processing. Not very stable?
-                    "voxel_size": 0.025, # units/px 
-                    "working_diameter": 5.0, # Maximum feature diameter from array center.
-                    "z_offset":0.025, # Initial gap from base of voxel array to first feature.
-                    "z_pitch": 0.625, # Distance between features in final voxel array.
-                }
-
-
-
-
-
+# TODO Add all-in-one functions
 class Experiment:
     def __init__(self,
                  base_dir,
-                 expt_tag = True,
-                 img_dir = 'images',
-                 pars = None,
-                 random_seed = None,
-                 cal = True,
+                 expt_tag: str = None,
+                 template: str = None,
+                 cal: str|float = None,
+                 random_seed: int = None,
                 ):
         """ Generator and processor for VAMML experiment.
 
         Args:
             - base_dir (str) : Experiment directory. Creates if not existent.
-            - expt_tag (str,bool) : Sets experiment tag for parameters file (record-keeping).
-                                If bool==True, sets experiment name to last level of base_dir. Default: True
-            - img_dir (str) : Sets image directory for images of printed gels. Creates if not existent. 
-                              Must be subdirectory of base_dir. Default: 'images'
-            - pars (bool,str) : Loads template parameters from specified file location. 
-                                If None, loads from default parameters.
-                                If True, tries to load from base_dir.
-                                If str, tries to load from specified json file. 
-                                Default: None
-            - random_seed (int) : Sets RNG for generator, auto-generates if not provided. Default: None
+            - expt_tag (str) : Sets experiment tag for parameters file (record-keeping).
+                               If None, sets experiment name to last level of base_dir. Default: None
+            - template (str)  : Loads template parameters from specified file location. See Experiment.save_template method. 
+                                If str, tries to update defeult parameters from specified json file. 
+                                If None, loads from default parameters. Default: None
             - cal (str,float) : Calibration value for images in mm/px or unit of voxel_size. 
-                                If str, tries to load image to process for grid distance.
+                                If str, tries to load image to process for grid distance, if not found uses as cal_keyword
                                 If not provided, tries to load from img_dir based on inclusion of self.pars['cal_keyword'] in name.
-        
+            - random_seed (int) : Sets RNG for generator, auto-generates if not provided. Default: None
         """
-        ### Parsing dirs
+        # Parsing dirs
         self.base_dir = os.path.normpath(base_dir)
         if not os.path.isdir(self.base_dir):
             os.makedirs(self.base_dir)
-        self.img_dir = os.path.join(self.base_dir,img_dir)
+        self.img_dir = os.path.normpath(os.path.join(self.base_dir,'images'))
         if not os.path.isdir(self.img_dir):
             os.makedirs(self.img_dir)
-        ### Parameter loading and handling. 
-        # Loading from default
-        if pars == None:
-            self.pars = default_pars
-        # Loading frome existing
-        elif pars == True:
-            # Loads from first thing fitting 'pars.json' template in base_dir.
-            try_pars = [i for i in os.listdir(self.base_dir) if 'pars.json' in i]
-            if len(try_pars)>0:
-                with open(os.path.join(self.base_dir,try_pars[0]),'r') as f:
-                    self.pars = json.load(f, object_hook = self.__convert_keys_to_int)
-        # Loading from template
+        # Loading parameters, either from local pars file or default
+        try_pars = [i for i in os.listdir(self.base_dir) if 'pars.json' in i]
+        if len(try_pars)==1:
+            with open(os.path.join(self.base_dir,try_pars[0]),'r') as f:
+                self.pars = json.load(f, object_hook = convert_keys_to_int)
+        elif len(try_pars)>1:
+            raise RuntimeError('Too many pars.json files found in base_dir.')
         else:
-            with open(pars,'r') as f:
-                self.pars = json.load(f, object_hook = self.__convert_keys_to_int)
-        # Automatically setting cal_keyword to cal if not defined. 
-        if 'cal_keyword' not in self.pars.keys():
-            self.pars['cal_keyword'] = 'cal'
-        ### Experiment tag handling
-        # Interpreting tag from directory
-        if expt_tag == True:
-            self.pars['expt'] = [i for i in self.base_dir.split(os.path.sep) if i != ''][-1]            
-        # Pulling from str
+            self.pars = default_pars
+        # expt_tag handling
+        if (expt_tag is None) and ('expt' not in self.pars.keys()):
+            self.pars['expt'] = [i for i in self.base_dir.split(os.path.sep) if i != ''][-1]
         elif type(expt_tag) == str:
             self.pars['expt'] = expt_tag
-        elif (pars == True) & ('expt' in self.pars.keys()):
-            pass
-        else:
-            self.pars['expt'] = None
-        if (random_seed == None) & (self.pars['random_seed'] == None):
-            self.pars['random_seed'] = int(time())
-        # Initializing placeholder value
+        elif expt_tag is not None:
+            raise TypeError(f'Invalid expt_tag type: {type(expt_tag)}')
+        # Initializing placeholder values
         self.pars['current_idx'] = 0
-
-        ### Deprecating old nomenclature
-        # 
+        if 'metadata' not in self.pars.keys():
+            self.pars['metadata'] = {}
+        if 'cal_keyword' not in self.pars.keys():
+            self.pars['cal_keyword'] = 'cal'
+        # Applying template if defined.
+        if type(template) == str:
+            try:
+                with open(os.path.join(template),'r') as f:
+                    self.update(json.load(f, object_hook = convert_keys_to_int))
+            except:
+                raise ValueError(f'Unable to parse template file as json: {template}')
+        elif template is not None:
+            raise TypeError(f'Invalid expt_tag type: {type(expt_tag)}')
+        # cal handling
+        if type(cal) == str:
+            if os.path.isfile(cal):
+                self.get_calibration(cal)
+            else:
+                self.pars['cal_keyword'] = cal
+        elif cal is not None:
+            self.get_calibration(cal)
+        else:
+            self.get_calibration()
+        # random_seed handling
+        if (random_seed is None) & (self.pars['random_seed'] is None):
+            self.pars['random_seed'] = int(time())
+        elif type(random_seed) == int:
+            self.pars['random_seed'] = int(time())
+        elif type(self.pars['random_seed']) is not int:
+            raise TypeError(f'Invalid random_seed type: {type(random_seed)}')
+        # Deprecating old nomenclature
         if 'image_fits' in self.pars.keys():
             for k in self.pars['image_fits'].keys():
                 i = self.pars['image_fits'][k]
@@ -138,13 +103,8 @@ class Experiment:
         if 'shape' in self.pars['shape_pars'].keys():
             self.pars['array_size'] = self.pars['shape_pars']['shape']
             del self.pars['shape_pars']['shape']
-
-        # Try to load in calibration if no previous value recorded. Otherwise defaults value.
-        if 'image_cal' not in self.pars.keys():
-            self.get_calibration()
-        # Setting variable for general reference
+        # Loading prepared base shapes if available. 
         self.base_shapes = []
-        # Load prepared base shapes by default. 
         if os.path.exists(os.path.join(base_dir,'arrays/base_shapes.npy')):
             self.from_array = True
             with open(os.path.join(base_dir,'arrays/base_shapes.npy'),'rb') as f:
@@ -152,7 +112,6 @@ class Experiment:
 
         else:
             self.from_array = False
-            
         # Load processed images by default.
         if os.path.exists(os.path.join(os.path.join(self.base_dir,'arrays'),'image_features.npy')):
             with open(os.path.join(os.path.join(self.base_dir,'arrays'),'image_features.npy'),'rb') as f:
@@ -170,17 +129,15 @@ class Experiment:
                 self.image_features.append({'name':imgname, 'array':arr})
         else:
             self.image_features = []
-        ### Initializing function maps
+        # Initializing function maps
         self.__shape_fcn_map = {
             'circle_deform':shapes.circle_deform,
             'rectangle_array': shapes.rectangle_array,
             'mixed':self.__mixed_shapes,
         }
         self.__img_fcn_map = {
-            'images.process_image':images.process_image,
+            'coomassie':images.process_coomassie,
         }
-        
-     
 
     def new_seed(self,seed = None):
         """
@@ -192,19 +149,32 @@ class Experiment:
         if type(seed) != int:
             seed = int(time())
         self.pars['random_seed'] = seed
-    
-    def save_pars(self):
+
+    def save_template(self,dst: str, pars_name: str = None):
         """
-        Saves experimental parameters as json file to base directory.
+        Saves designated template parameters to designated (local) directory
+
+        Args:
+            dst (str)       : Directory to save parameters, with respect to current working directory.
+            pars_name (str) : (Optional) Filename to write. Will be written as json filetype regardless.
+                              Default saves as '{expt_tag} pars.json'  
         """
-        pars_name = ' '.join([str(i) for i in [self.pars['expt'],'pars.json'] if i != None])
-        with open(os.path.join(self.base_dir, pars_name), 'w') as f:
-            json.dump(obj = self.pars, fp = f, sort_keys = True, indent = 4, cls = NpEncoder)
-        try:
-            np.save(os.path.join(os.path.join(self.base_dir,'arrays'),'image_features.npy'),
-                    [i['array'] for i in self.image_features])
-        except:
-            pass
+        keys = self.pars['template_pars']
+        # Sorting in case the json encoder gets picky.
+        keys.sort() 
+        template = {}
+        for k in keys:
+            template[k] = self.pars[k]
+        if pars_name is None:
+            pars_name = self.__add_tag('template pars.json',force=True)
+        else:
+            try:
+                pars_name = '.'.join([os.path.splitext(pars_name)[0],'json'])
+            except:
+                raise TypeError('pars_name could not be coerced to string.')
+        with open(os.path.join(dst, pars_name), 'w') as f:
+            json.dump(obj = template, fp = f, sort_keys = True, indent = 4, cls = NpEncoder)
+        
     
     def update(self,pars):
         """Updates expt pars dictionary with supplied pars. Wrapper for self.pars.update(pars).
@@ -313,7 +283,7 @@ class Experiment:
                 seeds[i] = seed # pyright: ignore[reportPossiblyUnboundVariable]
             bar()
         self.pars['shape_seeds'] = dict(zip(range(batch_size),seeds))
-        self.save_pars()
+        self.__save_pars()
         self.base_shapes = self.get_shapes()
         self.from_array = True
         if not os.path.exists(os.path.join(self.base_dir,'arrays')):
@@ -335,53 +305,70 @@ class Experiment:
             shape_list.append(self.get_shape(v))
         return shape_list
 
-    def get_calibration(self, cal = True):
-        """Get calibration scale (mm/px). 
+    def get_calibration(self,
+                        cal: str|float|bool = None):
+        """Get calibration scale (unit/px). 
         Defaults to finding calibration image in ./images folder by inclusion of self.pars['cal_keyword'] in name.
-        Processes on assumption of black grid with mm spacing on bright background."""  
+        Processes on assumption of black grid with mm spacing on bright background.
+        
+        Args:
+            cal (str,float,bool) : If str, tries to load as image file to parse as calibration grid.
+                                   If float-like, applies as value (unit/px).
+                                   If True, re-runs autodetection for calibration image from cal_keyword.
+                                   If None, auto-detects if not run before. Default:None 
+        """  
         # Get valid images
         image_list = self.__get_valid_images(self.img_dir) 
-        # TODO remove if works [i for i in os.listdir(self.img_dir) if 'ipynb' not in i] 
-        # Finding calibration image.
+        # Try loading as filename
         if type(cal) == str:
-            self.pars['image_cal'] = images.find_grid_dist(cal)
-        elif any(self.pars['cal_keyword'] in s for s in image_list) & (cal == True):
-            # Automatically process calibration image
-            cal_image = image_list.pop(image_list.index([i for i in image_list if self.pars['cal_keyword'] in i][0]))
-            self.pars['cal_image'] = cal_image
-            self.pars['image_cal'] = images.find_grid_dist(os.path.join(self.img_dir,cal_image))
+            try:
+                self.pars['cal_size'] = images.find_grid_dist(cal)
+                self.pars['cal_image'] = cal
+            except:
+                raise RuntimeError(f'Unable to process calibration image: {cal}')
+        # Load in numeric value
         elif (type(cal) == int) or (type(cal) == float):
-            # Get input as specified number
-            self.pars['image_cal'] = cal
-        # Providing a default value for processing
-        if 'image_cal' not in self.pars.keys():
-            self.pars['image_cal'] = 1 / self.pars['voxel_size']
+            self.pars['cal_size'] = cal
+        # Tries to autodetect
+        elif (any(self.pars['cal_keyword'] in s for s in image_list) and 
+              (((cal is None) and (self.pars['cal_size'] is None)) or (cal is True))):
+            candidates = [i for i in image_list if self.pars['cal_keyword'] in i]
+            if len(candidates) == 1:
+                cal_image = image_list.pop(image_list.index(candidates[0]))
+                self.pars['cal_image'] = cal_image
+                self.pars['cal_size'] = images.find_grid_dist(os.path.join(self.img_dir,cal_image))
+            else:
+                raise RuntimeError(f'Too many candidate calibration images found: {candidates}')
+        # Providing a default value if all else fails
+        elif (self.pars['cal_size'] is None) and (len(image_list)>0):
+            self.pars['cal_size'] = self.pars['voxel_size']
+            warnings.warn('No calibration image/value found. Calibration scale defaulting to voxel_size.', UserWarning)
         while np.any([self.pars['cal_keyword'] in i for i in image_list]):
             cal_image = image_list.pop(image_list.index([i for i in image_list if self.pars['cal_keyword'] in i][0]))
         image_list.sort()
         self.pars['image_dict'] = dict(zip(range(len(image_list)),image_list))
+        self.__save_pars()
 
-    def process_images(self, process_fcn = None):
+    def process_images(self, 
+                       export: bool = False,
+                       process_fcn = None):
         """Processes images into grayscale arrays highlighting the core feature.
         Can implement custom functions. See batchtools.images.process_images or wiki for spec details. 
 
         Args:
+            export (bool)         : Exports processed features to image_features.npy. Default False
             process_fcn (function): Function for image processing. Default None (loads from pars)"""
-        # Function mapping processing function
+        # Calling processing function from function map
         if process_fcn is None:
-            process_fcn = self.__img_fcn_map[self.pars['processing_function']]
-        # Loading images
-        image_list = self.__get_valid_images(self.img_dir) 
-        if 'image_cal' not in self.pars.keys():
-            self.get_calibration()
-        while np.any([self.pars['cal_keyword'] in i for i in image_list]):
-            # TODO sort this out
-            cal_image = image_list.pop(image_list.index([i for i in image_list if self.pars['cal_keyword'] in i][0]))
-        image_list.sort()
-        self.pars['image_dict'] = dict(zip(range(len(image_list)),image_list))
+            process_fcn = self.__img_fcn_map[self.pars['image_processing']]
+        # Using to load images and patch up missing cal values
+        self.get_calibration()
+        # Defining empty list for iterator
         self.image_features = []
-        with alive_bar(len(image_list), title='Processing images') as bar: 
-            for image_name in [os.path.join(self.img_dir,im) for im in image_list]:
+        # Going through image_dict to append image_features
+        with alive_bar(len(self.pars['image_dict']), title='Processing images') as bar: 
+            for i in range(len(self.pars['image_dict'])):
+                image_name = os.path.join(self.img_dir,self.pars['image_dict'][i])
                 self.image_features.append(process_fcn(image_name, **self.pars))
                 bar()
         shape_seeds = self.pars['shape_seeds'].values()
@@ -396,9 +383,20 @@ class Experiment:
                     for arr in arrs:
                         self.base_shapes.append( arr.astype(int))
                         bar()
+        if export:
+            try:
+                np.save(os.path.join(os.path.join(self.base_dir,'arrays'),'image_features.npy'),
+                        [i['array'] for i in self.image_features])
+            except:
+                raise RuntimeError('Unable to export processed images to arrays.')
+        
 
-    def fit_images(self):
+    def fit_images(self, 
+                   auto_exclude: bool = None):
+        """Fits image featuers with base shapes by downsampled rigid registration."""
         if not hasattr(self,'image_fits'):
+            if auto_exclude is None:
+                auto_exclude = self.pars['auto_exclude']
             self.pars['image_fits'] = {}
             crops = []
             # Generating downsampled comparison arrays
@@ -423,15 +421,21 @@ class Experiment:
                 crop_in = crop_in.astype(float)
                 # Normalizing comparison maps
                 crop_in = (crop_in - crop_in.min()) / (crop_in.max() - crop_in.min())
-                self.pars['image_fits'][i] = images.get_fit_pars(crop_in,crops_out) # pyright: ignore[reportPossiblyUnboundVariable]
+                # TODO add auto-exclude
+                fit_pars = self.__get_fit_pars(crop_in,crops_out)
+                self.pars['image_fits'][i] = fit_pars # pyright: ignore[reportPossiblyUnboundVariable]
+                if (fit_pars['sim_score'] < self.pars['min_similarity']) and auto_exclude:
+                    # skip_images auto-updates best_fit to None
+                    self.skip_images(i)
+                    print(f'No fit found for {self.pars['image_dict'][i]}')
                 bar()
+        self.__save_pars()
 
     def shapes_to_voxels(self):
         if hasattr(self,'shape_arrs'):
             arrs = self.base_shapes
         else:
             arrs = self.get_shapes()
-        xy_size = int(self.pars['array_size'])
         obj_z_iter = int(self.pars['obj_thickness'] / self.pars['voxel_size'])
         z_pitch_iter = int(self.pars['z_pitch'] / self.pars['voxel_size'])
         z_offset_iter = int(self.pars['z_offset'] / self.pars['voxel_size'])
@@ -440,7 +444,8 @@ class Experiment:
                                                   [np.zeros_like(arr)[None,...]]*z_pitch_iter,axis=0) for arr in arrs],
                                   axis=0)
         arrstack = (arrstack.astype(bool).astype(np.uint8)*255)
-        arrstack.tofile(os.path.join(self.base_dir,f'{self.pars["expt"]} voxels.dat'))
+        # TODO Add output format fcn_dict
+        arrstack.tofile(os.path.join(self.base_dir,self.__add_tag('voxels.dat')))
 
     def plot_alignments(self, save = False, export = False):
         """
@@ -467,48 +472,84 @@ class Experiment:
                                           resample=Image.Resampling.LANCZOS)
                 crop_in = crop_in.rotate(-self.pars['image_fits'][i]['rotation'],Image.Resampling.BICUBIC)
                 crop_in = images.norm_to_uint8(np.array(crop_in))[...,None]
-                crop_out = images.centered_crop(self.base_shapes[self.pars['image_fits'][i]['best_fit']])
-                crop_out = crop_out.resize((self.pars['array_size'],
-                                            self.pars['array_size']),
-                                            resample=Image.Resampling.LANCZOS)
-                crop_out = images.norm_to_uint8(np.array(crop_out))
-                im = np.concatenate([crop_in, crop_out[...,None], np.zeros_like(crop_in)], axis=-1)
+                if self.pars['image_fits'][i]['best_fit'] is not None:
+                    crop_out = images.centered_crop(self.base_shapes[self.pars['image_fits'][i]['best_fit']])
+                    crop_out = crop_out.resize((self.pars['array_size'],
+                                                self.pars['array_size']),
+                                                resample=Image.Resampling.LANCZOS)
+                    crop_out = images.norm_to_uint8(np.array(crop_out))[...,None]
+                else:
+                    crop_out = np.zeros_like(crop_in)
+                im = np.concatenate([crop_in, crop_out, np.zeros_like(crop_in)], axis=-1)
                 ax.imshow(im)
                 if export:
                     im = Image.fromarray(im,mode='RGB')
                     if not os.path.isdir(os.path.join(self.base_dir,'alignments')):
                         os.mkdir(os.path.join(self.base_dir,'alignments'))
-                    im.save(os.path.join(os.path.join(self.base_dir,'alignments'),self.pars['image_dict'][i]),mode='RGB')
+                    im.save(os.path.join(os.path.join(self.base_dir,'alignments'),
+                                         self.pars['image_dict'][i]),mode='RGB')
                 ax.set_title(i)
             ax.axis('off')
         if save:
-            plt.savefig(os.path.join(self.base_dir,f'{self.pars['expt']} alignments.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(self.base_dir,self.__add_tag('alignments.png')), bbox_inches='tight')
         else:
             plt.plot()
 
-    def correct_alignment(self, image_number, shape_fit, rotation, mirror=False):
+    def correct_alignment(self, 
+                          image_number: int, 
+                          shape_fit: int = None, 
+                          rotation: int|float = 0,
+                          mirror: bool = False):
         """Manually corrects alignment of misaligned shapes.
 
+        Args:
+            image_number (int)   : Index of image in image_dict
+            shape_fit (int)      : Index of base shape (see Experiment.plot_shapes)
+                                   If None, adds image_number to skip_images. Default: None
+            rotation (int|float) : Value to rotate in degrees. Default: 0
+            mirror (bool)        : Whether to flip on x-axis. Default: False
         """
-        self.pars['image_fits'][image_number] = {
+        # TODO unified crop_in/out function?
+        # TODO add interactive widget??
+        fig,ax = plt.subplots(nrows=1,ncols=1,figsize=(2,2))
+        arr_in = self.image_features[image_number]['array']
+        if mirror:
+            arr_in = np.flip(arr_in, axis=-1)
+        crop_in = images.centered_crop(arr_in)
+        crop_in = crop_in.resize((self.pars['array_size'],
+                                  self.pars['array_size']),
+                                  resample=Image.Resampling.LANCZOS)
+        crop_in = crop_in.rotate(-rotation,Image.Resampling.BICUBIC)
+        crop_in = images.norm_to_uint8(np.array(crop_in))[...,None]
+        # Standard correction
+        if shape_fit is not None:
+            # Sanity checking shape_fit value
+            if shape_fit in range(self.pars['batch_size']):
+                crop_out = images.centered_crop(self.base_shapes[shape_fit])
+                crop_out = crop_out.resize((self.pars['array_size'],
+                                            self.pars['array_size']),
+                                            resample=Image.Resampling.LANCZOS)
+                crop_out = images.norm_to_uint8(np.array(crop_out))[...,None]
+                # Removing from skip_images if present
+                while shape_fit in self.pars['skip_images']:
+                    self.pars['skip_images'].remove(shape_fit)
+            else:
+                raise ValueError('shape_fit value not in range of batch_size.')
+        # Adding skip_images if None
+        else: 
+            crop_out = np.zeros_like(crop_in)
+            self.skip_images(image_number)
+        # Updating pars with new fit
+        update = {
             'best_fit': shape_fit, 
             'rotation': rotation,
             'mirror': mirror,
             }
-        fig,axs = plt.subplots(nrows=1,ncols=1,figsize=(2,2))
-        arr_in = self.image_features[image_number]['array']
-        if self.pars['image_fits'][image_number]['mirror']:
-            arr_in = np.flip(arr_in, axis=-1)
-        crop_in = images.centered_crop(arr_in)
-        crop_in = crop_in.resize((self.pars['downsample_size']*4,self.pars['downsample_size']*4),resample=Image.Resampling.LANCZOS)
-        crop_in = crop_in.rotate(-self.pars['image_fits'][image_number]['rotation'],Image.Resampling.BICUBIC)
-        crop_in = images.norm_to_uint8(np.array(crop_in))[...,None]
-        crop_out = images.centered_crop(self.base_shapes[self.pars['image_fits'][image_number]['best_fit']])
-        crop_out = crop_out.resize((self.pars['downsample_size']*4,self.pars['downsample_size']*4),resample=Image.Resampling.LANCZOS)
-        crop_out = images.norm_to_uint8(np.array(crop_out))
-        im = np.concatenate([crop_in, crop_out[...,None], np.zeros_like(crop_in)], axis=-1)
-        axs.imshow(im)
-        axs.axis('off')
+        self.pars['image_fits'][image_number].update(update) 
+        self.__save_pars()
+        im = np.concatenate([crop_in, crop_out, np.zeros_like(crop_in)], axis=-1)
+        ax.imshow(im)
+        ax.axis('off')
         plt.plot()
 
     def plot_shapes(self, save = False):
@@ -529,7 +570,7 @@ class Experiment:
             ax.set_title(i)
             ax.axis('off')
         if save:
-            plt.savefig(os.path.join(self.base_dir,f'{self.pars['expt']} shapes.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(self.base_dir,self.__add_tag('shapes.png')), bbox_inches='tight')
         else:
             plt.plot()
 
@@ -544,24 +585,31 @@ class Experiment:
             self.pars['skip_images'] = []
         if type(images) != list:
             images = [images]
+        for image_number in images:
+            self.pars['image_fits'][image_number]['best_fit'] = None
         if append:
-            for i in images:   
-                self.pars['skip_images'].append(i)
+            self.pars['skip_images'].extend(images)
         else:
             self.pars['skip_images'] = images
+        # Restructuring for compactness
+        l = list(np.unique(self.pars['skip_images']))
+        l.sort()
+        self.pars['skip_images'] = l
+        self.__save_pars()
 
-    def export_alignments(self, relative=False, threshold=150):
+    def export_alignments(self, relative=False , threshold=150):
         """
         Exports pngs of aligned shapes from input images (red) and source shape (green) to directory.
         Exports to './outputs' if relative=False, or './outputs_relative' if relative=True
 
         Args:
             relative (bool) : Whether to transform gel feature relative to input array.
-            threshold (int) : Threshold to round up to max value.
+            threshold (int) : Threshold to round up to max value in range of 0 to 255.
 
         Outputs: 
             Images - Images with gel feature in red channel, aligned to input array in green channel.
         """
+        # TODO: fix up relative vs absolute packaging stuff, make summary images instead of output folders
         # Parameter to block in internal of image
         TRUE_IMAGE_THRESHOLD = threshold
         if relative:
@@ -571,11 +619,12 @@ class Experiment:
         if not os.path.isdir(out_dir):
             os.mkdir(out_dir)
         to_process = [i for i in range(len(self.image_features)) if i not in self.pars['skip_images']]
+        to_package = {}
         with alive_bar(len(to_process), title='Exporting data') as bar:
             for i in to_process:
                 px_size = self.pars['array_size']
                 actual_size = self.pars['voxel_size'] * px_size
-                scaled_size = int(self.pars['image_cal'] * actual_size)
+                scaled_size = int(actual_size/self.pars['cal_size'])
                 
                 empty_in = np.zeros((scaled_size,scaled_size),dtype=float)
                 empty_out = np.zeros((px_size,px_size),dtype=float)
@@ -616,10 +665,26 @@ class Experiment:
                 img = Image.fromarray(image)
                 if relative:
                     img = alignments.align_affine_trs(img)
+                # Unpacking to re-pack to array pkl later. Doing after relative since that has a potential processing step.
+                to_package[i] = np.array(img)[...,:2] 
                 img.save(os.path.join(out_dir,self.pars['image_dict'][i]))
                 bar()
+        packaged = []
+        # Getting filler for entries to skip
+        zero_template = np.zeros_like(to_package[list(to_package.keys())[0]])
+        for i in range(len(self.image_features)):
+            if i in self.pars['skip_images']:
+                packaged.append(zero_template)
+            else:
+                packaged.append(to_package[i])
+        if relative:
+            np.save(os.path.join(os.path.join(self.base_dir,'arrays'),'output_relative.npy'),
+                    packaged)
+        else:
+            np.save(os.path.join(os.path.join(self.base_dir,'arrays'),'output.npy'),
+                    packaged)
 
-    def __get_valid_images(self,src: str):
+    def __get_valid_images(self, src: str):
         files = []
         for f in os.listdir(src):        
             try:
@@ -628,22 +693,124 @@ class Experiment:
                     files.append(f)
             except (IOError, SyntaxError):
                 continue
-        return files
-        
-    def __convert_keys_to_int(self,d: dict):
-        new_dict = {}
-        for k, v in d.items():
-            try:
-                new_key = int(k)
-            except ValueError:
-                new_key = k
-            if type(v) == dict:
-                v = self.__convert_keys_to_int(v)
-            new_dict[new_key] = v
-        return new_dict     
+        return files 
     
-    def __mixed_shapes(self, seed, current_idx, **kwargs):
+    def __mixed_shapes(self, seed: int, current_idx: int, **kwargs):
         if current_idx % 2 == 0:
             return shapes.circle_deform(seed,**self.pars)
         else:
             return shapes.rectangle_array(seed,**self.pars)
+        
+    def __add_tag(self,s: str, force: bool = False) -> str:
+        if (self.pars['include_expt'] or force) and (type(self.pars['expt']) == str):
+            return ' '.join([self.pars['expt'],s])
+        else:
+            return s
+    
+    def __save_pars(self):
+        """
+        Saves experiment parameters as json file to base directory.
+        """
+        # Structuring metadata in pars before saving
+        keys = self.pars['metadata_pars']
+        # Sorting in case the json encoder gets picky.
+        keys.sort() 
+        metadata = {}
+        for k in keys:
+            metadata[k] = self.pars[k]
+        z_heights = {}
+        z_pitch = self.pars['z_pitch']
+        z_offset = self.pars['z_offset']
+        obj_thickness = self.pars['obj_thickness']
+        # Getting z-position with respect to where it should be based on array parameters and median object thickness
+        for k in self.pars['image_dict'].keys():
+            z_heights[k] = z_offset + z_pitch*k + obj_thickness*(k+0.5)
+        metadata['z_height'] = z_heights
+        self.pars['metadata'].update(metadata)
+        pars_name = self.__add_tag('pars.json')
+        with open(os.path.join(self.base_dir, pars_name), 'w') as f:
+            json.dump(obj = self.pars, fp = f, sort_keys = True, indent = 4, cls = NpEncoder)
+
+    def __get_fit_pars(self,img,outs):
+        im_fit = {}
+        adiff = np.abs(outs - img[None,None,...]).sum(axis=(-2,-1))
+        asim = 1. - adiff / img.shape[-1]**2
+        bestshape = asim.max(axis=1).argmax()
+        alignmax = asim[bestshape].argmax()
+        im_fit['best_fit'] = bestshape
+        im_fit['rotation'] = alignmax % 360
+        im_fit['mirror'] = bool(alignmax // 360)
+        im_fit['sim_score'] = asim[bestshape,alignmax]
+        return im_fit
+        
+
+def collate_metadata(base_dir: str,
+                     out_csv: str = None,
+                     expt_key: str = None
+                     ):
+    """Collates metadata generated from vamml.batch.Experiment for output into a reference csv for tensorflow use.
+    This works by walking through the directories in a tree below base_dir, finding any parameter files and 
+    creating records from there. It can additionally take an expt_key csv file, which adds metadata using expt as a key. 
+    
+    Args:
+        base_dir (str) : highest level directory in which saved experiments are stored.
+        out_csv (str)  : Name of csv with local directory to save output csv (eg 'dir/expts.csv')
+                         if not specified, defaults to base_dir/metadata.csv
+        expt_key (str) : Optional csv file to act as a dictionary with 'expt' column as key.
+    """
+    if out_csv is None:
+        out_csv = os.path.join(base_dir,'metadata.csv')
+    if expt_key is not None:
+        try:
+            exptdicts = pd.read_csv(expt_key).to_dict()
+            exptidx = {v:k for k,v in exptdicts.pop('expt').items()}
+        except:
+            raise ValueError(f'Could not load expt_key with file {expt_key}')
+    else: exptidx = {}
+    records = []
+    for d,_,fs in os.walk(base_dir):
+        try_pars = [f for f in fs if ('pars.json' in f) and ('template' not in f)]
+        # Only counting directories with one set of parameters
+        if (len(try_pars)==1) and os.path.exists(os.path.join(d,'arrays')):
+            with open(os.path.join(d,try_pars[0]),'r') as f:
+                pars = json.load(f, object_hook = convert_keys_to_int)
+                meta_pars = pars['metadata']
+                if 'expt' in meta_pars.keys():
+                    expt = meta_pars['expt']
+                else:
+                    expt = None
+                meta_dicts = {}
+                # Separating dictionaries from singleton values
+                for k in [i for i in meta_pars.keys()]:
+                    if type(meta_pars[k])==dict:
+                        meta_dicts[k] = meta_pars.pop(k)
+                # Iterating through image indices
+                for i in range(pars['batch_size']):
+                    if i not in pars['skip_images']:
+                        # Setting up records for all output array sets. Also only outputting those that have complete arrays.
+                        for arr in [os.path.join('arrays',i) for i in os.listdir(os.path.join(d,'arrays')) if 'output' in i]:
+                            r = {}
+                            r.update(meta_pars)
+                            r['base_dir'] = d
+                            r['source_array'] = arr
+                            r['expt_index'] = i
+                            r['base_image'] = os.path.join('images',pars['image_dict'][i])
+                            # Reading individual index specific info
+                            for k in meta_dicts.keys():
+                                r[k] = meta_dicts[k][i]
+                            # Adding info from expt_key file
+                            if (expt is not None) and (expt in exptidx.keys()):
+                                idx = exptidx[expt]
+                                for k in exptdicts.keys():
+                                    r[k] = exptdicts[k][idx]
+                            records.append(r)
+    # Compiling and saving dataframe to csv. Enforcing filetype.
+    pd.DataFrame.from_records(records).to_csv('.'.join([os.path.splitext(out_csv)[0],'csv']),index=False)
+              
+
+    ### General outline:
+    # Walk directory tree
+    # Scan any directories with pars
+    # Construct records from pars
+    ### To include: metadata, dicts in metadata (from idx keys) src img (full local tree), src array + idx
+    # Assemble dataframe from records

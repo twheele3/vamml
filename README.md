@@ -8,7 +8,7 @@ This repository is for code related to the VAMML method as described in (pending
 ## Uses
 
 ### Shape generation/alignment
-The primary function of this code base is for generating and processing random shapes used in voxel arrays for test data generation (See Fig C above). This is primarily achieved via instancing the Experiment class in vamml.Batches.experiment. 
+The primary function of this code base is for generating and processing random shapes used in voxel arrays for test data generation (See Fig C above). This is primarily achieved via instancing the Experiment class in ```vamml.batch```. 
 
 ### Attention U-net and data augmentation
 An extensible tensorflow model based on the VAMML attention U-net is in vamml/Model, as well as data augmentation tools for unified augmentation of paired images and metadata.
