@@ -1,7 +1,9 @@
 {
-    "align_method": "diff",
+    "array_size": 256,
     "batch_size":8,
-    "expt": "example",
+    "cal_keyword": "cal",
+    "downsample_size": 64,
+    "expt": "example_expt",
     "hole_count": 2,
     "hole_margin": 0,
     "hole_pars": {
@@ -23,13 +25,12 @@
     "min_thickness": 0.5,
     "obj_radius": 3,
     "obj_thickness": 1.25,
+    "processing_function": "images.process_image",
     "random_seed": 1696022625,
-    "rescale_size": 64,
     "shape_method": "circle_deform",
     "shape_pars": {
         "n": 6,
-        "r": 0.7,
-        "shape": 256
+        "r": 0.7
     },
     "shape_seeds": {
         "0": 1406782446,

@@ -1,0 +1,5 @@
+pars list.txt
+.ipynb_checkpoints
+misc.ipynb
+__pycache__
+tmp
