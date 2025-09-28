@@ -10,10 +10,9 @@ from skimage.measure import label
 from skimage.morphology import white_tophat,binary_dilation,binary_erosion
 from sklearn.cluster import KMeans
 
-from .shapes import circle_deform,rectangle_array
-
 def find_grid_dist(image: str|npt.NDArray,
-                   plot: bool = False):
+                   plot: bool = False
+                   ) -> float:
     """
     Determines the pixel calibration distance between lines of a calibration grid.
     Optionally plots proof of function.
@@ -56,10 +55,24 @@ def find_grid_dist(image: str|npt.NDArray,
         plt.show()
     return 1 / np.median(dists_sorted[:,1:3].flatten())
 
-def norm_arr(arr):
+def norm_arr(arr: npt.NDArray) -> npt.NDArray:
+    """Normalizes array"""
     return (arr - arr.min()) / (arr.max() - arr.min())
 
-def normalize_to_percentiles(arr,lower,upper):    
+def normalize_to_quantiles(arr: npt.NDArray,
+                             lower: float,
+                             upper: float
+                             ) -> npt.NDArray:
+    """Normalizes array to specified quantiles and trims values to range of [0.,1.].
+
+    Args:
+        arr (NDArray) : Array to normalize, float parseable
+        lower (float) : Lower quantile bounds, going up from 0 to 1.
+        lower (float) : Lower quantile bounds, going down from 1 to 0.
+
+    Returns:
+        NDArray(dtype=float)
+    """    
     # Casting to float
     arr = arr.astype(float)
     # Sanity checking values to make sure they fit in function
@@ -75,7 +88,11 @@ def normalize_to_percentiles(arr,lower,upper):
     arr[arr < 0] = 0
     return arr
     
-def process_coomassie(image_name,cal_size,tophat=False,**kwargs):
+def process_coomassie(image_name: str,
+                      cal_size: float,
+                      tophat: bool=False,
+                      **kwargs
+                      ) -> npt.NDArray:
     """Processes images into boolean feature arrays based on HSV. 
     Presumes high saturation object on low saturation background.
     Designed for processing coomassie-stained gels.
@@ -85,7 +102,10 @@ def process_coomassie(image_name,cal_size,tophat=False,**kwargs):
         cal_size (float)   : Value for units/px. Presumes mm/pix for reasonable processing.
         tophat (bool,float) : Whether to use tophat background subtraction method. Bypasses if False, 
                               otherwise uses value as multiplier with cal_size. The subsequent value 
-                              should be slightly larger than average radius of features to detect.     
+                              should be slightly larger than average radius of features to detect.
+
+    Returns:
+        NDArray(shape=(N,M), dtype=float)     
     """
     hsv = np.asarray(Image.open(image_name).convert('HSV')).astype(float)
     hsv[...,2] = 255 - hsv[...,2]
@@ -107,7 +127,7 @@ def process_coomassie(image_name,cal_size,tophat=False,**kwargs):
     coeffs = [2,1,1]
     arr = np.asarray([hsv[...,i]*coeffs[i] for i in range(3)]).sum(axis=0) * mask
     arr = (arr - arr.min())*255/(arr.max() - arr.min())
-    arr = normalize_to_percentiles(arr,
+    arr = normalize_to_quantiles(arr,
                                    lower = 1 - 1.*mask.sum() / np.prod(mask.shape),
                                    upper = 1 - 0.05*mask.sum() / np.prod(mask.shape))
     basins = label(mask)
@@ -121,13 +141,17 @@ def process_coomassie(image_name,cal_size,tophat=False,**kwargs):
     arr = arr.astype(float)
     arr[arr < 1e-6] = 0
     arr[arr > 1] = 1
-    return {'name':os.path.split(image_name)[1],'array':arr}
+    return arr
 
-def centered_crop(arr):
-    """
-    args:
-        arr (numeric, [N,M]): Array where higher values correlate to feature of interest. Assumes only one feature.
-    returns:
+def centered_crop(arr: npt.NDArray) -> Image:
+    """Finds the centroid of boolean feature inertia assuming a low but nonzero amount of noise
+    (less than 10% of normalized minimum), then crops to a minimum square bounding box around centroid.
+
+    Args:
+        arr (numeric, [N,M]): Array where higher values correlate to feature of interest. 
+        Assumes only one feature.
+    
+    Returns:
         PIL.Image object corresponding to crop allowing for full range of rotation without cropping.
     """
     # TODO: Auto-pad image if bounding box exceeds image size.
@@ -151,5 +175,20 @@ def centered_crop(arr):
     crop = (255*(crop - crop.min()) / (crop.max() - crop.min())).astype(np.uint8)
     return Image.fromarray(crop,mode='L')
 
-def norm_to_uint8(arr):
+def norm_to_uint8(arr: npt.NDArray
+                  ) -> npt.NDArray[np.uint8]:
+    """Normalizes then scales array to uint8, max 255"""
     return (255*(arr.astype(float) - arr.astype(float).min()) / (arr.astype(float).max() - arr.astype(float).min())).astype(np.uint8)
+
+def pad_square(arr: npt.NDArray,
+               shape: int) -> npt.NDArray:
+    """Pads array into the center of a square array of size (shape,shape)"""
+    # Casting array to fit regardless of dims
+    full_shape = list(arr.shape)
+    full_shape[0] = shape
+    full_shape[1] = shape
+    empty = np.zeros((shape,shape),dtype=arr.dtype)
+    diff = np.array(empty.shape) - np.array(arr.shape)
+    idx = np.array([diff - diff//2,np.array(empty.shape) - diff//2])
+    empty[idx[0,0]:idx[1,0],idx[0,1]:idx[1,1]] = arr
+    return empty

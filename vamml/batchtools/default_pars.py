@@ -16,7 +16,8 @@ default_pars = {
                         60
                     ],
                     "image_processing": "coomassie", # (str) Name of function to call for imag processing
-                    "include_expt": True, 
+                    "include_expt": False, # Adds expt tag to certain outputs 
+                    "intermediate_scale": 2.0, # Amount to scale array_size up for saving image_features (preserves detail)
                     "mask_shape": "circle", # Masking element to clip vs object radius
                     "metadata_pars": [ # Pars to add key:value pairs to metadata when saving
                         "expt",
@@ -28,6 +29,7 @@ default_pars = {
                     "min_thickness": 0.1, # Minimum thickness in mm between any internal features and surface.
                     "obj_radius": 3, # Maximum object radius
                     "obj_thickness": 1.25, # Z-thickness
+                    "printer_format": "tomolite",
                     "random_seed": None, # Starting seed for generator
                     "shape_method": "circle_deform", # Method to generate shapes. Available: ['circle_deform', 'rectangle_array','mixed']
                     "shape_pars": { # Miscellaneous generator parameters to assemble shape arrays

@@ -17,6 +17,7 @@
         60
     ],   
     "image_processing": "coomassie",
+    "intermediate_scale": 2.0,
     "include_expt": true, 
     "kmean_group": [
         155.40568757,
