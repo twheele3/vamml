@@ -19,6 +19,9 @@ default_pars = {
                     "include_expt": False, # Adds expt tag to certain outputs 
                     "intermediate_scale": 2.0, # Amount to scale array_size up for saving image_features (preserves detail)
                     "mask_shape": "circle", # Masking element to clip vs object radius
+                    "metadata" : {
+                        "dose":"nan"
+                    },
                     "metadata_pars": [ # Pars to add key:value pairs to metadata when saving
                         "expt",
                         "voxel_size"

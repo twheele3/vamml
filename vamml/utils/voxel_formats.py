@@ -2,7 +2,7 @@ import os
 
 import numpy as np
 import numpy.typing as npt
-from .utils import load_json,save_json
+from .json import load_json,save_json
 
 def export_tomolite(arr: npt.NDArray[np.uint8],
              export_dir: str, 
@@ -51,20 +51,37 @@ def export_tomolite(arr: npt.NDArray[np.uint8],
         save_json(os.path.join(export_dir,'.'.join([' '.join([os.path.splitext(export_name)[0],'info']),'txt'])),d)
 
 def import_tomolite(src_dat: str,
-                    src_meta: str|None,
-                    shape: tuple[int,int,int]|None,
+                    src_meta: str|None = None,
+                    shape: tuple[int,int,int]|None = None,
                     **kwargs) -> npt.NDArray:
     """Load voxels.dat and voxels.meta.txt into array. Can also try from pars.json, or try to infer size.
     
     Args:
-        src_dat (str) : voxels.dat file to load.
+        src_dat (str) : voxels.dat file to load, or directory a voxels.dat file is located in.
         src_meta (str|None) : Either voxels.meta.txt or pars.json file associated with array.
                               If None, uses shape or infers. Default None.
         shape (tuple[int,int,int]|None) : Shape of array, if known. If None, and no src_meta, infers. Default None.
         
     Returns:
         np.array([Z,X,Y],dtype=np.uint8)"""
-    arr = np.fromfile(src_dat, dtype=np.uint8)
+    if os.path.isdir(src_dat):
+        assumed = [i for i in os.listdir(src_dat) if 'voxels.dat' in i][0]
+        try:
+            arr = np.fromfile(os.path.join(src_dat,assumed), dtype=np.uint8)
+        except:
+            ValueError(f'Unable to load voxels.dat from src_dat: {src_dat}')
+    else:
+        arr = np.fromfile(src_dat, dtype=np.uint8)
+    if (src_meta is None) and (shape is None):
+        if os.path.isdir(src_dat):
+            basedir = src_dat
+        else:
+            basedir = os.path.split(src_dat)[0]
+        try:
+            src_meta = os.path.join(basedir,
+                                    [i for i in os.listdir(basedir) if ('voxels' in i) and ('txt' in i)][0])
+        except:
+            pass
     # Pulling shape from json file if not given
     if (type(src_meta) is str) and (shape is None):
         try:
